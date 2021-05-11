@@ -1,0 +1,267 @@
+###A simple multiprotocol setup to validate Isilon behavior
+
+####Updated 06/2020
+-This is very simple demo of multiprotocol behavior with OneFS with SMB & NFS.
+
+
+isi license add --evaluation=SMARTCONNECT_ADVANCED
+
+###hit q and yes to accept eula
+
+###1a.setup SmartConnect on Isilon
+
+isi network subnets modify groupnet0.subnet0 --sc-service-addr=192.168.1.100 --sc-service-name=ssip-isilon.demo.local
+isi network pools create --id=groupnet0:subnet0:pool1 --ranges=192.168.1.60-192.168.1.80  --access-zone=System  --alloc-method=dynamic  --ifaces=1-3:ext-1 --sc-subnet=subnet0  --sc-dns-zone=mp.demo.local    --description=mp_pool
+
+
+###join AD
+isi auth ads create demo.local administrator --password=Password123!
+isi auth ads list
+isi zone zones modify System --add-auth-providers=lsa-activedirectory-provider:DEMO.LOCAL
+isi zone zones list -v
+
+
+###Setup DNS, two options; 1. manual in DNS Server, 2. powershell  -- (either way make sure you understand smartconnect)
+
+###GO to windows DNS
+-go to the demo.local zone
+-Add A record ssip-isilon  192.168.1.100
+-Add NS record mp    --> ssip-isilon.demo.local
+-Test SCzone:
+nslookup mp.demo.local 192.168.1.2
+
+OR 
+ 
+###Run the following PowerShell command:
+
+-open PowerShell prompt from Start Menu
+Add-DnsServerZoneDelegation -Name "demo.local" -ChildZoneName "mp" -NameServer "ssip-isilon.demo.local" -IPAddress 192.168.1.100
+
+
+-Test SCzone:
+-go to linux host and test
+nslookup mp.demo.local 192.168.1.2
+
+
+###on isilon make base mp directory
+
+mkdir -p /ifs/mp
+chmod 777 /ifs/mp
+touch /ifs/mp/this_is_isilon.txt
+chmod 777 /ifs/mp/this_is_isilon.txt
+cd /ifs/mp
+ls -al 
+
+###highlight Isilon permission model and the use of -le and -len
+ls -le this_is_isilon.txt
+ls -len this_is_isilon.txt
+
+
+
+###2.create SMB share
+
+isi smb shares create --zone=System --path=/ifs/mp --name=mp --description=mp_test_share
+isi smb share view mp
+isi smb shares permission modify mp --zone=System --permission-type=allow --permission=full --wellknown=Everyone
+isi smb shares permission modify mp --zone=System --wellknown=Everyone --run-as-root
+
+isi smb shares permission list mp
+
+###review share configurations as needed
+
+###Connect to SMB share
+connect to smartconnectname and open the smb share via windows explorer: 
+
+\\mp.demo.local\
+open mp  
+
+At this time just use the following if needed: localhost\root  Password123!  
+
+- create a file smb.txt with windows explorer
+- open and edit the smb.txt file
+- look at the permissions on smb.txt with win explorer security tab
+
+
+
+###3.create nfs export on Isilon for mp
+
+isi nfs exports create --path=/ifs/mp/ --map-root=root  --zone=System --description=mp_test_export
+isi nfs exports list --zone=System
+
+onefs 9.x
+isi nfs exports view --id=1 --zone=System
+
+onefs 8.x
+isi nfs exports view --id=2 --zone=System
+
+###review export configurations as needed
+
+
+
+###connect to nfs export from linux host vis  - use hdfs1 host
+
+mkdir /mnt/isilon-mp
+mount -t nfs mp.demo.local:/ifs/mp /mnt/isilon-mp
+mountstats
+cd /mnt/isilon-mp
+ls -al
+
+##
+- create a file nfs.txt 
+- open and edit the nfs.txt file
+- look at the permissions on nfs.txt 
+touch nfs.txt
+ls -al
+vi nfs.txt
+ls -al
+cat nfs.txt
+
+
+
+
+###4.review mp file access to files created and edited via different protocols
+from Win Explorer:
+-open smb.txt  add some text similar to smb-edit, save and exit
+-open nfs.txt  add some text similar to smb-edit, save and exit
+
+from nfs host:
+-vi nfs.txt  add some text similar to nfs-edit, save and exit
+-vi smb.txt  add some text similar to nfs-edit, save and exit
+
+then review all your updates from Win Explorer & nfs and Isilon CLI
+
+
+##this is a simple test to ilustrate multiprotocol access and not demonstrate the OneFS File Permission model
+
+Some things we can talk about here are:
+-run as root on the smb share
+-acl on smb file, posix on nfs file
+-it all works here b/c of root user
+
+!Remember the goal is a simple MP demo to show just how easy this can be!
+
+
+####################################################################################################################################
+Bonus!
+
+###5.review mp file permissions and the behavior of the oneFS permission model, no interptetation of the behavior is presented here
+###It can be used as a demo of the permission model:
+-posix files
+-acl'd files
+and how permission changes are executed
+
+ 
+###Add new test files
+From NFS host add new file posix.txt
+From SMB host add new file acls.txt
+
+
+
+###Review from file permissions from Isilon
+cd /ifs/mp
+
+ls -al
+ls -le posix.txt
+ls -le acls.txt
+
+ls -len posix.txt
+ls -len acls.txt
+
+
+###Review from NFS 
+ls -al
+
+
+###Review from SMB
+Windows Explorer
+
+
+
+
+####How do mp file permission changes look
+
+
+###6.chmod posix file 
+###on NFS host
+chmod 775 posix.txt
+ls -al posix.txt
+
+###From Isilon
+ls -le nfs.tx
+
+
+What happens to the Synthetic DACL? Why?
+
+
+
+
+###7.modify the acl on an acl'd file
+###From Isilon add an ACE - Add to DACL
+ls -le acls.txt
+chmod +a  group Administrators  allow file_gen_all,inherited_ace acls.txt
+ls -le acls.txt
+
+###From Windows
+Review from SMB Windows Explorer
+
+###From NFS
+Review from NFS
+ls -al acls.txt
+
+
+What happens to the posix bits and the DACL?
+
+
+
+
+
+###8.chmod an existing ACL file from NFS
+###on NFS host
+chmod 775 acls.txt
+ls -al acls.txt
+
+###View from isilon
+ls -len acls.txt
+
+What happens to the DACL? Why?
+
+
+
+
+###9.ACL a posix file
+###From Isilon add an ACE
+Add to DACL
+ls -le posix.txt
+chmod +a  group Administrators  allow file_gen_all,inherited_ace posix.txt
+ls -le posix.txt
+
+###From NFS
+Review from NFS
+ls -al posix.txt
+
+
+
+What happens to the posix bits and the DACL?
+Can the ACL be seen from NFS?
+
+
+
+###10.Remove ACL's reset to posix
+ls -le posix.txt   (it has an ACL from step8)
+chmod -b 775 posix.txt
+ls -le posix.txt 
+
+###From NFS
+Review from NFS
+ls -al posix.txt
+
+
+
+
+####Notes:
+-only way to see full permission is ls -le
+-only way to see ondisk permission is ls -len
+-The ACL Policies on the cluster manage file permission change behavior in Balanced Mode
+-posix changes to posix files behaves as expected
+-modifying ACE on ACL'd file behaves as expected
+-adding ACE to a posix file changes file to ACL(+)
